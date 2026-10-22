@@ -6,3 +6,4 @@ __pycache__/
 *-healed/
 dpo_pairs.jsonl
 .DS_Store
+*.log
