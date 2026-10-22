@@ -85,6 +85,11 @@ def test_auto_dtype_never_fp16():
         assert abliterate.pick_dtype("auto", torch.device(dev)) != torch.float16
 
 
+def test_alpha_sweeps_by_default_and_can_be_pinned():
+    assert abliterate.parse_args([]).alpha is None          # sweep
+    assert abliterate.parse_args(["--alpha", "0.8"]).alpha == 0.8
+
+
 class _Block(torch.nn.Module):
     def forward(self, x):
         return (x + 1.0,)  # HF decoder layers return a tuple

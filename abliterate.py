@@ -10,11 +10,14 @@ Notes:
     works. Harmful completions are never printed unless you pass
     ``--show-outputs`` (and even then they are truncated).
   * Deterministic (greedy decoding), so runs are comparable.
+  * After picking the layer it sweeps the ablation strength α: each candidate
+    is a real trial edit, verified and undone, and the weakest one that still
+    removes every probe refusal is kept (override with ``--alpha``).
 
 Usage:
-    python abliterate.py                           # full run, ~90 s on Apple silicon; saves the edited
+    python abliterate.py                           # full run, ~4 min on Apple silicon; saves the edited
                                                    # model to qwen-abliterated/ for chat.py
-    python abliterate.py --n-train 64 --n-test 16 --max-new-tokens 48 --max-candidates 3   # ~50 s
+    python abliterate.py --n-train 64 --n-test 16 --max-new-tokens 48 --max-candidates 3   # ~2 min
     python abliterate.py --no-save                 # don't write the edited model (~6 GB)
 
 Prompt sets (mlabonne/harmful_behaviors and mlabonne/harmless_alpaca, the same
@@ -107,6 +110,13 @@ def load_prompts(n_train: int, n_test: int) -> tuple[list[str], list[str], list[
     return harmful_train, harmless_train, harmful_test
 
 
+def probe_prompts(n_train: int, n_probes: int) -> list[str]:
+    """Fresh harmful prompts (past the ones used for the direction) for selecting
+    the layer and strength, so the test split stays fully held out."""
+    tail = _read_prompts(DATA_DIR / "harmful_behaviors_train.csv")[n_train : n_train + n_probes]
+    return tail or load_prompts(n_train, n_probes)[2]
+
+
 def chat_encode(tokenizer, prompts: list[str], device: torch.device):
     texts = [
         tokenizer.apply_chat_template(
@@ -152,14 +162,14 @@ def decoder_layers(model):
 
 
 @contextmanager
-def inference_time_ablation(model, direction: torch.Tensor):
-    """Temporarily subtract the refusal direction from every block's output."""
+def inference_time_ablation(model, direction: torch.Tensor, alpha: float = 1.0):
+    """Temporarily subtract ``alpha`` × the refusal direction from every block's output."""
     handles = []
 
-    def hook(_module, _inputs, output):
+    def hook(_module, _inputs, output, _alpha=alpha):
         if isinstance(output, tuple):
-            return (ablate_activation(output[0], direction),) + tuple(output[1:])
-        return ablate_activation(output, direction)
+            return (ablate_activation(output[0], direction, _alpha),) + tuple(output[1:])
+        return ablate_activation(output, direction, _alpha)
 
     for layer in decoder_layers(model):
         handles.append(layer.register_forward_hook(hook))
@@ -170,18 +180,35 @@ def inference_time_ablation(model, direction: torch.Tensor):
             h.remove()
 
 
-def orthogonalize_model(model, direction: torch.Tensor) -> None:
-    """Permanently remove the ability to write along ``direction``."""
+def orthogonalize_model(model, direction: torch.Tensor, alpha: float = 1.0) -> None:
+    """Permanently remove ``alpha`` × the ability to write along ``direction``."""
     # Embedding rows are vectors in residual space -> axis=1.
     emb = model.model.embed_tokens.weight
-    emb.data = orthogonalize_weight(emb.data, direction, axis=1)
+    emb.data = orthogonalize_weight(emb.data, direction, axis=1, alpha=alpha)
     # nn.Linear weights are [out, in]; the *output* (rows) is written into the residual
     # stream -> axis=0. Explicit because o_proj is square and cannot be inferred.
     for layer in decoder_layers(model):
         o = layer.self_attn.o_proj.weight
-        o.data = orthogonalize_weight(o.data, direction, axis=0)
+        o.data = orthogonalize_weight(o.data, direction, axis=0, alpha=alpha)
         d = layer.mlp.down_proj.weight
-        d.data = orthogonalize_weight(d.data, direction, axis=0)
+        d.data = orthogonalize_weight(d.data, direction, axis=0, alpha=alpha)
+
+
+def writer_weights(model):
+    """Every weight matrix that gets edited, as (name, tensor) pairs."""
+    yield "embed_tokens", model.model.embed_tokens.weight
+    for i, layer in enumerate(decoder_layers(model)):
+        yield f"layers.{i}.o_proj", layer.self_attn.o_proj.weight
+        yield f"layers.{i}.down_proj", layer.mlp.down_proj.weight
+
+
+def snapshot_writer_weights(model) -> dict:
+    return {name: w.detach().to("cpu", copy=True) for name, w in writer_weights(model)}
+
+
+def restore_writer_weights(model, snapshot: dict) -> None:
+    for name, w in writer_weights(model):
+        w.data = snapshot[name].to(device=w.device, dtype=w.dtype)
 
 
 def parse_args(argv=None):
@@ -190,12 +217,15 @@ def parse_args(argv=None):
     ap.add_argument("--device", default=None, help="cuda | mps | cpu (auto)")
     ap.add_argument("--dtype", default="auto", choices=["auto", "float32", "bfloat16", "float16"],
                     help="auto = bf16 on CUDA, fp32 elsewhere (fp16 overflows on Qwen2.5)")
-    ap.add_argument("--n-train", type=int, default=128, help="prompts per class for the direction")
+    ap.add_argument("--n-train", type=int, default=256, help="prompts per class for the direction")
     ap.add_argument("--n-test", type=int, default=32, help="held-out harmful prompts for scoring")
     ap.add_argument("--max-new-tokens", type=int, default=64)
     ap.add_argument("--batch-size", type=int, default=16)
     ap.add_argument("--max-candidates", type=int, default=6, help="layers to score with hooks")
     ap.add_argument("--layer", type=int, default=None, help="skip search and use this layer")
+    ap.add_argument("--alpha", type=float, default=None,
+                    help="projection strength to remove (1.0 = full ablation). Default: sweep and keep the "
+                         "weakest strength that still removes refusals")
     ap.add_argument("--save", type=Path, default=DEFAULT_SAVE_DIR,
                     help="where to write the edited model so chat.py can load it (default: qwen-abliterated next to this script)")
     ap.add_argument("--no-save", action="store_true", help="don't write the edited model to disk")
@@ -264,6 +294,7 @@ def run(args) -> None:
 
     # ---- 5. layer ----------------------------------------------------------
     banner("5 · Find where it lives", "block each candidate in turn; which one stops the refusals?")
+    probe = probe_prompts(args.n_train, min(24, args.n_test))
     if args.layer is not None:
         chosen = LayerScore(layer=args.layer, refusal_rate=float("nan"))
         print(f"using user-specified layer {args.layer}")
@@ -272,7 +303,6 @@ def run(args) -> None:
         raw_norms = (harmful_acts.mean(0) - harmless_acts.mean(0)).norm(dim=-1)
         cands = sorted(cands, key=lambda l: -float(raw_norms[l]))[: args.max_candidates]
         scores: list[LayerScore] = []
-        probe = harmful_test[: min(16, len(harmful_test))]
         for layer in sorted(cands):
             d = directions[layer].to(device=device, dtype=dtype)
             with inference_time_ablation(model, d):
@@ -289,14 +319,38 @@ def run(args) -> None:
         chosen = best_layer(scores)
         print(f"-> chosen layer {green(bold(str(chosen.layer)))}")
 
-    # ---- 6. edit -----------------------------------------------------------
-    banner("6 · Delete it from the weights", "a permanent edit; no training, no hooks")
+    # ---- 6. edit ------------------------------------------------------------
+    banner("6 · Edit the weights", "weakest α first; keep the first permanent edit that removes every probe refusal")
     direction = directions[chosen.layer].to(device=device, dtype=dtype)
     t0 = time.time()
-    orthogonalize_model(model, direction)
+    if args.alpha is not None:
+        alpha = args.alpha
+        orthogonalize_model(model, direction, alpha)
+        print(f"applied the edit at user-specified α = {alpha}")
+    else:
+        # Hooks and weight edits agree at α = 1 but not below it, so every trial
+        # is a real edit, verified on the probe set and undone if it fails.
+        snapshot = snapshot_writer_weights(model)
+        alpha = None
+        for a in (0.6, 0.8, 1.0, 1.25):
+            restore_writer_weights(model, snapshot)
+            orthogonalize_model(model, direction, a)
+            outs = generate(model, tokenizer, probe, device, args.max_new_tokens, args.batch_size)
+            ref, on = refusal_rate(outs), on_topic_rate(probe, outs)
+            print(f"  α = {a:<5}: refusal {ref:>4.0%}  on-topic {on:>4.0%}")
+            if ref == 0.0:
+                alpha = a
+                break
+        if alpha is None:
+            print(dim("no strength removed every probe refusal; falling back to full ablation (α = 1.0)"))
+            restore_writer_weights(model, snapshot)
+            alpha = 1.0
+            orthogonalize_model(model, direction, alpha)
     edit_s = time.time() - t0
     n_mats = 1 + 2 * n_layers
-    print(f"orthogonalised embed + {n_layers}x(o_proj, down_proj) in {edit_s:.2f}s  {dim(f'({n_mats} matrices)')}")
+    detail = (f"— orthogonalised embed + {n_layers}x(o_proj, down_proj) in {edit_s:.1f}s "
+              f"({n_mats} matrices), no training, no hooks")
+    print(f"kept α = {green(bold(str(alpha)))}  {dim(detail)}")
 
     # ---- 7. after ----------------------------------------------------------
     banner("7 · After: does the edited model still refuse?")
@@ -317,7 +371,7 @@ def run(args) -> None:
 
     banner("Done")
     print(f"model          : {args.model}")
-    print(f"layer          : {chosen.layer} / {n_layers}")
+    print(f"edit           : layer {chosen.layer} / {n_layers}, α = {alpha}")
     print(f"refusal rate   : {red(f'{base_rate:.0%}')} -> {green(bold(f'{abl_rate:.0%}'))}")
     print(f"on-topic answer: {base_answered:.0%} -> {abl_answered:.0%}")
     print(f"total time     : {time.time() - t_start:.1f}s")

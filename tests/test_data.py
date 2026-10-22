@@ -29,3 +29,14 @@ def test_data_covers_the_default_prompt_counts():
 def test_held_out_test_prompts_are_disjoint_from_train():
     harmful_train, _, harmful_test = abliterate.load_prompts(10_000, 10_000)
     assert not set(harmful_train) & set(harmful_test)
+
+
+def test_probe_prompts_are_fresh():
+    """Probes (used to pick layer/strength) must come from neither the prompts
+    that built the direction nor the held-out test set."""
+    n_train, n_probes = 256, 24
+    harmful_train, _, harmful_test = abliterate.load_prompts(n_train, 32)
+    probes = abliterate.probe_prompts(n_train, n_probes)
+    assert len(probes) == n_probes
+    assert not set(probes) & set(harmful_train)
+    assert not set(probes) & set(harmful_test)

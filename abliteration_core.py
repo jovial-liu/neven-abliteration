@@ -134,14 +134,16 @@ def candidate_layers(n_layers: int, lo: float = 0.4, hi: float = 0.8) -> list[in
     return list(range(start, end))
 
 
-def ablate_activation(x: torch.Tensor, direction: torch.Tensor) -> torch.Tensor:
-    """Remove the component of ``x`` along unit vector ``direction``.
+def ablate_activation(x: torch.Tensor, direction: torch.Tensor, alpha: float = 1.0) -> torch.Tensor:
+    """Remove ``alpha`` times the component of ``x`` along unit vector ``direction``.
 
-    Works for any leading batch shape; ``direction`` is [d_model].
+    Works for any leading batch shape; ``direction`` is [d_model]. ``alpha=1`` is
+    full ablation; ``0 < alpha < 1`` removes only part of the component and
+    leaves the model correspondingly less modified.
     """
     d = direction.to(dtype=x.dtype, device=x.device)
     proj = (x @ d).unsqueeze(-1) * d
-    return x - proj
+    return x - alpha * proj
 
 
 def _residual_axis(weight: torch.Tensor, direction: torch.Tensor, axis: int | None) -> int:
@@ -172,16 +174,16 @@ def _residual_axis(weight: torch.Tensor, direction: torch.Tensor, axis: int | No
 
 
 def orthogonalize_weight(
-    weight: torch.Tensor, direction: torch.Tensor, axis: int | None = None
+    weight: torch.Tensor, direction: torch.Tensor, axis: int | None = None, alpha: float = 1.0
 ) -> torch.Tensor:
     """Project the refusal direction out of a matrix that writes to the residual stream.
 
     ``axis`` says which dimension of ``weight`` lives in residual space:
-      * ``axis=0``: HF ``nn.Linear`` weight [d_model(out), d_in]  -> W' = W - r r^T W
-                    (so r^T W' = 0: the layer can no longer *write* along r)
-      * ``axis=1``: embedding weight [vocab, d_model]            -> E' = E - (E r) r^T
-                    (so E' r = 0: no token embedding has an r component)
-    If ``axis`` is omitted it is inferred from the shape, except for square matrices
+      * ``axis=0``: HF ``nn.Linear`` weight [d_model(out), d_in]  -> W' = W - α r rᵀ W
+                    (α=1: rᵀ W' = 0, the layer can no longer *write* along r)
+      * ``axis=1``: embedding weight [vocab, d_model]            -> E' = E - α (E r) rᵀ
+    ``alpha < 1`` removes only that fraction of the direction component. If ``axis``
+    is omitted it is inferred from the shape, except for square matrices
     where it must be given.
     """
     ax = _residual_axis(weight, direction, axis)
@@ -189,9 +191,9 @@ def orthogonalize_weight(
     r = r / r.norm().clamp_min(1e-8)
     w = weight.detach().to(torch.float32)
     if ax == 0:
-        out = w - torch.outer(r, r @ w)
+        out = w - alpha * torch.outer(r, r @ w)
     else:
-        out = w - torch.outer(w @ r, r)
+        out = w - alpha * torch.outer(w @ r, r)
     return out.to(dtype=weight.dtype)
 
 

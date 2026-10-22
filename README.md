@@ -12,10 +12,14 @@ The pipeline in `abliterate.py`:
 2. Per layer, the refusal direction is the normalised difference of means
    (harmful minus harmless).
 3. Score candidate layers (40–80 % depth) by suppressing each direction with
-   inference-time hooks and measuring the refusal rate; keep the best layer.
-4. Permanently orthogonalise every weight that writes to the residual stream
+   inference-time hooks on *fresh* probe prompts (never the eval set); rank by
+   refusal rate, then real-answer quality.
+4. Pick the ablation strength α by applying real trial edits, weakest first, and
+   keeping the first that removes every probe refusal (hooks and weight edits
+   disagree below α = 1, so trial edits are verified, not simulated).
+5. Permanently orthogonalise every weight that writes to the residual stream
    (`embed_tokens`, every `o_proj` and `down_proj`) against that direction:
-   `W' = W − r rᵀ W`. No training, no hooks left behind.
+   `W' = W − α r rᵀ W`. No training, no hooks left behind.
 
 Default target is `Qwen/Qwen2.5-1.5B-Instruct`; any Llama/Qwen/Mistral/Gemma-style
 HF model works via `--model`.
@@ -29,7 +33,7 @@ with `fetch_datasets.py`). Only the base model is fetched from the Hub (one-off,
 ```bash
 bash setup.sh                                  # 1. install everything, run tests, download the model (once, ~3 GB)
 . .venv/bin/activate                           # 2. activate (each new terminal)
-python abliterate.py                           # 3. run it, ~90 s on Apple silicon; saves the edited model
+python abliterate.py                           # 3. run it, ~4 min on Apple silicon; saves the edited model
 python chat.py --compare                       # 4. chat with it: original vs edited, /q to quit
 bash reset.sh                                  # 5. wipe and start over (add --full to also delete the download)
 ```
@@ -42,7 +46,7 @@ you can ignore on newer setups: `Redirects are currently not supported in MacOs`
 Needs only `python3` (macOS Command Line Tools: `xcode-select --install`), ~4 GB free disk
 and internet for step 1. Everything else is installed into `.venv` inside this folder.
 
-Faster run (~50 s):
+Faster run (~2 min):
 
 ```bash
 python abliterate.py --n-train 64 --n-test 16 --max-new-tokens 48 --max-candidates 3

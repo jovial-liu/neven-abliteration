@@ -134,6 +134,18 @@ def test_ablate_activation_removes_component_only():
     assert torch.allclose(y @ q, x @ q, atol=1e-4)
 
 
+def test_ablate_activation_partial_alpha():
+    d = 16
+    r = torch.randn(d)
+    r = r / r.norm()
+    x = torch.randn(5, d)
+    proj = (x @ r).unsqueeze(-1) * r
+    assert torch.allclose(ablate_activation(x, r, 0.5), x - 0.5 * proj, atol=1e-5)
+    assert torch.allclose(ablate_activation(x, r, 1.0), x - proj, atol=1e-5)
+    # the remaining component along r is scaled by (1 - alpha)
+    assert torch.allclose(ablate_activation(x, r, 0.5) @ r, 0.5 * (x @ r), atol=1e-4)
+
+
 def test_orthogonalize_linear_weight_out_axis():
     d_model, d_in = 24, 40
     W = torch.randn(d_model, d_in)          # HF nn.Linear convention [out, in]
@@ -207,3 +219,17 @@ def test_orthogonalize_rejects_mismatched_shapes():
         orthogonalize_weight(torch.randn(10, 12), torch.randn(7))
     with pytest.raises(ValueError):
         orthogonalize_weight(torch.randn(3, 4, 5), torch.randn(5))
+
+
+def test_orthogonalize_partial_alpha_keeps_scaled_component():
+    d_model, d_in = 24, 40
+    W = torch.randn(d_model, d_in)
+    r = torch.randn(d_model)
+    r = r / r.norm()
+    W2 = orthogonalize_weight(W, r, alpha=0.5)
+    # can still write along r, but only half as much
+    assert torch.allclose(r @ W2, 0.5 * (r @ W), atol=1e-4)
+    # the orthogonal complement is still untouched
+    q = torch.randn(d_model)
+    q = q - (q @ r) * r
+    assert torch.allclose(q @ W2, q @ W, atol=1e-4)

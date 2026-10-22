@@ -91,7 +91,7 @@ def main() -> int:
         print(red(f"No saved model at '{args.model}'."))
         cmd = "python abliterate.py" if Path(args.model) == DEFAULT_SAVE_DIR \
             else f"python abliterate.py --save {args.model}"
-        print(f"Run abliterate.py first (about 90 s; it saves the edited model), then try again:\n  {bold(cmd)}")
+        print(f"Run abliterate.py first (a few minutes; it saves the edited model), then try again:\n  {bold(cmd)}")
         return 2
 
     device = pick_device(args.device)
