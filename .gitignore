@@ -3,4 +3,6 @@ __pycache__/
 .pytest_cache/
 *.pyc
 *-abliterated/
+*-healed/
+dpo_pairs.jsonl
 .DS_Store

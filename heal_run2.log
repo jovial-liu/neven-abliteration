@@ -1,0 +1,69 @@
+Loading checkpoint shards:   0%|          | 0/2 [00:00<?, ?it/s]Loading checkpoint shards: 100%|██████████| 2/2 [00:00<00:00, 63.67it/s]
+
+──────────────────────────────────────────────────────────────────────
+1 · Preference pairs
+reusing 688 cached pairs from dpo_pairs.jsonl
+──────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────
+2 · Tokenise
+688 pairs, windows up to 512 tokens
+──────────────────────────────────────────────────────────────────────
+
+──────────────────────────────────────────────────────────────────────
+3 · Before healing
+the abliterated model: no refusals, but answers wander
+──────────────────────────────────────────────────────────────────────
+abliterated   refusals 0%   on-topic 78%   benign quality 75%
+(38s)
+
+──────────────────────────────────────────────────────────────────────
+4 · DPO
+LoRA r=16 on q_proj, k_proj, v_proj, gate_proj, up_proj; β=0.1, lr=1e-05, 1 epoch(s), NLL anchor 0.5
+──────────────────────────────────────────────────────────────────────
+reference log-probs precomputed  (209s)
+  step   25/688  dpo 0.5960  margin +2.049  pairs-beating-ref 100%  (25s)
+  step   50/688  dpo 0.5869  margin +2.252  pairs-beating-ref 100%  (49s)
+  step   75/688  dpo 0.6552  margin +0.773  pairs-beating-ref 100%  (76s)
+  step  100/688  dpo 0.3900  margin +7.404  pairs-beating-ref 100%  (105s)
+  step  125/688  dpo 0.3277  margin +9.475  pairs-beating-ref 100%  (144s)
+  step  150/688  dpo 0.2595  margin +12.163  pairs-beating-ref 100%  (174s)
+  step  175/688  dpo 0.2041  margin +14.852  pairs-beating-ref 100%  (203s)
+  step  200/688  dpo 0.0500  margin +29.711  pairs-beating-ref 100%  (227s)
+  step  225/688  dpo 0.0149  margin +41.976  pairs-beating-ref 100%  (255s)
+  step  250/688  dpo 0.1288  margin +19.842  pairs-beating-ref 100%  (288s)
+  step  275/688  dpo 0.3229  margin +9.648  pairs-beating-ref 100%  (314s)
+  step  300/688  dpo 0.0111  margin +44.933  pairs-beating-ref 100%  (343s)
+  step  325/688  dpo 0.0127  margin +43.594  pairs-beating-ref 100%  (389s)
+  step  350/688  dpo 0.1086  margin +21.654  pairs-beating-ref 100%  (499s)
+  step  375/688  dpo 0.0123  margin +43.903  pairs-beating-ref 100%  (674s)
+  step  400/688  dpo 0.0929  margin +23.289  pairs-beating-ref 100%  (852s)
+  step  425/688  dpo 0.0035  margin +56.598  pairs-beating-ref 100%  (978s)
+  step  450/688  dpo 0.0014  margin +65.680  pairs-beating-ref 100%  (1046s)
+  step  475/688  dpo 0.0330  margin +33.955  pairs-beating-ref 100%  (1089s)
+  step  500/688  dpo 0.0146  margin +42.167  pairs-beating-ref 100%  (1124s)
+  step  525/688  dpo 0.0083  margin +47.815  pairs-beating-ref 100%  (1207s)
+  step  550/688  dpo 0.0006  margin +74.009  pairs-beating-ref 100%  (1328s)
+  step  575/688  dpo 0.0010  margin +69.044  pairs-beating-ref 100%  (1410s)
+  step  600/688  dpo 0.0002  margin +86.895  pairs-beating-ref 100%  (1477s)
+  step  625/688  dpo 0.4500  margin +5.652  pairs-beating-ref 100%  (1541s)
+  step  650/688  dpo 0.7570  margin -1.239  pairs-beating-ref 0%  (1606s)
+  step  675/688  dpo 0.0141  margin +42.532  pairs-beating-ref 100%  (1676s)
+  step  688/688  dpo 0.3793  margin +7.737  pairs-beating-ref 100%  (1747s)
+
+──────────────────────────────────────────────────────────────────────
+5 · After healing
+refusals must stay at 0; on-topic answers should rise
+──────────────────────────────────────────────────────────────────────
+healed        refusals 0%   on-topic 97%   benign quality 78%
+
+──────────────────────────────────────────────────────────────────────
+Done
+──────────────────────────────────────────────────────────────────────
+refusals   : 0% -> 0%   (must stay 0)
+on-topic   : 78% -> 97%   (the wandering share this fixes)
+benign     : 75% -> 78%
+total time : 2056s
+
+saved the healed model to /Users/neven/abliteration/qwen-abliterated-healed
+chat with it:   python chat.py qwen-abliterated-healed --compare

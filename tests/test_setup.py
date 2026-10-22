@@ -23,7 +23,8 @@ def test_setup_script_parses_and_covers_every_dependency():
 
 def test_reset_script_removes_everything_setup_creates(tmp_path):
     text = _bash_ok(ROOT / "reset.sh")
-    for target in (".venv", "qwen-abliterated", "__pycache__", ".pytest_cache"):
+    for target in (".venv", "qwen-abliterated", "qwen-abliterated-healed", "dpo_pairs.jsonl",
+                   "__pycache__", ".pytest_cache"):
         assert target in text, target
     assert "--full" in text and "models--Qwen--Qwen2.5-1.5B-Instruct" in text
 
@@ -31,13 +32,16 @@ def test_reset_script_removes_everything_setup_creates(tmp_path):
     copy = tmp_path / "repo"
     copy.mkdir()
     (copy / "reset.sh").write_text(text)
-    for d in (".venv", ".pytest_cache", "qwen-abliterated", "tests/__pycache__"):
+    for d in (".venv", ".pytest_cache", "qwen-abliterated", "qwen-abliterated-healed",
+              "tests/__pycache__"):
         (copy / d).mkdir(parents=True)
         (copy / d / "x").write_text("x")
+    (copy / "dpo_pairs.jsonl").write_text("{}")
     (copy / "scratch.txt").write_text("keep me")
     subprocess.run(["bash", str(copy / "reset.sh")], check=True, capture_output=True)
-    for d in (".venv", ".pytest_cache", "qwen-abliterated", "tests/__pycache__"):
-        assert not (copy / d).exists(), d
+    for gone in (".venv", ".pytest_cache", "qwen-abliterated", "qwen-abliterated-healed",
+                 "dpo_pairs.jsonl", "tests/__pycache__"):
+        assert not (copy / gone).exists(), gone
     assert (copy / "scratch.txt").read_text() == "keep me"  # user files survive a reset
 
 

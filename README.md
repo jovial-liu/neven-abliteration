@@ -22,6 +22,10 @@ The pipeline in `abliterate.py`:
 5. The edit orthogonalises every weight that writes to the residual stream
    (`embed_tokens`, every `o_proj` and `down_proj`) against that direction:
    `W' = W − α r rᵀ W`. No training, no hooks left behind.
+6. Optional `heal.py`: DPO on benign preference pairs (chosen = original
+   answer, rejected = edited answer) with LoRA on the matrices that only
+   *read* from the residual stream, so the orthogonalised writers stay
+   orthogonal and refusals cannot come back through the adapter.
 
 Default target is `Qwen/Qwen2.5-1.5B-Instruct`; any Llama/Qwen/Mistral/Gemma-style
 HF model works via `--model`.
@@ -36,13 +40,21 @@ with `fetch_datasets.py`). Only the base model is fetched from the Hub (one-off,
 bash setup.sh                                  # 1. install everything, run tests, download the model (once, ~3 GB)
 . .venv/bin/activate                           # 2. activate (each new terminal)
 python abliterate.py                           # 3. run it, ~6 min on Apple silicon; saves the edited model
-python chat.py --compare                       # 4. chat with it: original vs edited, /q to quit
-bash reset.sh                                  # 5. wipe and start over (add --full to also delete the download)
+python heal.py                                 # 4. optional: DPO-heal the edit; ~1 h first run, ~35 min reruns
+python chat.py qwen-abliterated-healed --compare   # 5. chat: original vs healed (/q to quit)
+bash reset.sh                                  # 6. wipe and start over (add --full to also delete the download)
 ```
 
 Step 3 writes the edited model to `qwen-abliterated/` (~6 GB) at the end of every run;
-step 4 loads it from there. Add `--no-save` to step 3 if you don't want that. Two warnings
-you can ignore on newer setups: `Redirects are currently not supported in MacOs` (torch) and
+step 4 loads it from there. Step 4 is optional: `heal.py` fine-tunes the edited model
+with DPO (chosen = original model's answer, rejected = the edited model's answer, on
+benign prompts from `data/`), which recovers answer quality the edit cost — LoRA
+training, feasible on a Mac; refusals stay at 0 and on-topic answers go 78% → 97%
+on this model. It caches its preference pairs to `dpo_pairs.jsonl`, so a second run
+skips the generation step. Step 5 chats with the healed model
+(`python chat.py --compare` still works against the unhealed one). Add `--no-save`
+to step 3 if you don't want the model written to disk. Two warnings you can ignore on
+newer setups: `Redirects are currently not supported in MacOs` (torch) and
 `You are sending unauthenticated requests to the HF Hub` (public downloads need no token).
 
 Needs only `python3` (macOS Command Line Tools: `xcode-select --install`), ~4 GB free disk
@@ -59,6 +71,7 @@ python abliterate.py --n-train 64 --n-test 16 --max-new-tokens 48 --max-candidat
 | File | What it is |
 |---|---|
 | `abliterate.py` | Abliterates `Qwen/Qwen2.5-1.5B-Instruct` and prints before/after refusal rates |
+| `heal.py` | Optional DPO healing of the edited model (recovers answer quality) |
 | `chat.py` | Chat with the edited model (and the original side by side) |
 | `abliteration_core.py` | The maths (difference-of-means, orthogonalisation), unit-tested |
 | `data/` | The prompt lists (mlabonne/harmful_behaviors, mlabonne/harmless_alpaca), committed |

@@ -5,9 +5,9 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-rm -rf .venv .pytest_cache qwen-abliterated
+rm -rf .venv .pytest_cache qwen-abliterated qwen-abliterated-healed dpo_pairs.jsonl
 find . -name __pycache__ -type d -prune -exec rm -rf {} +
-echo "removed: .venv, qwen-abliterated, caches"
+echo "removed: .venv, qwen-abliterated, qwen-abliterated-healed, dpo_pairs.jsonl, caches"
 
 if [ "${1:-}" = "--full" ]; then
   HUB="${HF_HOME:-$HOME/.cache/huggingface}/hub"

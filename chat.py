@@ -44,7 +44,7 @@ def missing_local_model(path_or_id: str) -> bool:
         return False
     looks_local = (
         path_or_id.startswith(("./", "../", "/", "~"))
-        or path_or_id.endswith("-abliterated")
+        or path_or_id.endswith(("-abliterated", "-healed"))
     )
     return bool(looks_local)
 

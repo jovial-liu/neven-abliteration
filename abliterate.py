@@ -387,7 +387,7 @@ def run(args) -> None:
     print(f"on-topic answer: {base_answered:.0%} -> {abl_answered:.0%}")
     print(f"total time     : {time.time() - t_start:.1f}s")
     print(dim("note           : this removes explicit refusals; it does not add capability, and usually"))
-    print(dim("                 costs a little general quality (heal with DPO/SFT)."))
+    print(dim("                 costs a little general quality (heal it: python heal.py)."))
 
     if not args.no_save:
         args.save.mkdir(parents=True, exist_ok=True)
