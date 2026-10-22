@@ -10,14 +10,16 @@ Notes:
     works. Harmful completions are never printed unless you pass
     ``--show-outputs`` (and even then they are truncated).
   * Deterministic (greedy decoding), so runs are comparable.
-  * After picking the layer it sweeps the ablation strength α: each candidate
-    is a real trial edit, verified and undone, and the weakest one that still
-    removes every probe refusal is kept (override with ``--alpha``).
+  * The layer and the ablation strength α are chosen by trying real edits:
+    candidates are applied permanently, verified on fresh probe prompts
+    (never the eval set), undone, and the best one is re-applied — fewest
+    refusals, then most real answers, then the weakest edit. Pin either with
+    ``--layer`` / ``--alpha``.
 
 Usage:
-    python abliterate.py                           # full run, ~4 min on Apple silicon; saves the edited
+    python abliterate.py                           # full run, ~6 min on Apple silicon; saves the edited
                                                    # model to qwen-abliterated/ for chat.py
-    python abliterate.py --n-train 64 --n-test 16 --max-new-tokens 48 --max-candidates 3   # ~2 min
+    python abliterate.py --n-train 64 --n-test 16 --max-new-tokens 48 --max-candidates 3 --top-k 1   # ~2 min
     python abliterate.py --no-save                 # don't write the edited model (~6 GB)
 
 Prompt sets (mlabonne/harmful_behaviors and mlabonne/harmless_alpaca, the same
@@ -47,7 +49,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from abliteration_core import (  # noqa: E402
     LayerScore,
     ablate_activation,
-    best_layer,
     candidate_layers,
     compute_refusal_directions,
     is_refusal,
@@ -218,11 +219,12 @@ def parse_args(argv=None):
     ap.add_argument("--dtype", default="auto", choices=["auto", "float32", "bfloat16", "float16"],
                     help="auto = bf16 on CUDA, fp32 elsewhere (fp16 overflows on Qwen2.5)")
     ap.add_argument("--n-train", type=int, default=256, help="prompts per class for the direction")
-    ap.add_argument("--n-test", type=int, default=32, help="held-out harmful prompts for scoring")
+    ap.add_argument("--n-test", type=int, default=64, help="held-out harmful prompts for the before/after report")
     ap.add_argument("--max-new-tokens", type=int, default=64)
     ap.add_argument("--batch-size", type=int, default=16)
-    ap.add_argument("--max-candidates", type=int, default=6, help="layers to score with hooks")
-    ap.add_argument("--layer", type=int, default=None, help="skip search and use this layer")
+    ap.add_argument("--max-candidates", type=int, default=6, help="layers to preview with hooks")
+    ap.add_argument("--top-k", type=int, default=3, help="previewed layers to try with verified real edits")
+    ap.add_argument("--layer", type=int, default=None, help="skip the search and use this layer")
     ap.add_argument("--alpha", type=float, default=None,
                     help="projection strength to remove (1.0 = full ablation). Default: sweep and keep the "
                          "weakest strength that still removes refusals")
@@ -292,11 +294,11 @@ def run(args) -> None:
     directions = compute_refusal_directions(harmful_acts, harmless_acts)
     print(f"one candidate direction per layer: {tuple(directions.shape)}  {dim(f'({time.time() - t0:.1f}s)')}")
 
-    # ---- 5. layer ----------------------------------------------------------
-    banner("5 · Find where it lives", "block each candidate in turn; which one stops the refusals?")
+    # ---- 5. shortlist -------------------------------------------------------
+    banner("5 · Shortlist the layers", "cheap hook preview ranks the candidates; real edits decide in the next step")
     probe = probe_prompts(args.n_train, min(24, args.n_test))
     if args.layer is not None:
-        chosen = LayerScore(layer=args.layer, refusal_rate=float("nan"))
+        shortlist = [args.layer]
         print(f"using user-specified layer {args.layer}")
     else:
         cands = candidate_layers(n_layers)
@@ -316,41 +318,50 @@ def run(args) -> None:
             bar = "█" * int(round(s.refusal_rate * 20)) + "░" * (20 - int(round(s.refusal_rate * 20)))
             print(f"  layer {layer:>2}: refusal {s.refusal_rate:>4.0%}  on-topic {s.on_topic:>4.0%}  "
                   f"(depth {layer / n_layers:.0%})  {red(bar)}")
-        chosen = best_layer(scores)
-        print(f"-> chosen layer {green(bold(str(chosen.layer)))}")
+        ranked = sorted(scores, key=lambda s: (s.refusal_rate, -s.on_topic, s.layer))
+        shortlist = [s.layer for s in ranked[: max(1, args.top_k)]]
+        print(f"-> shortlist for real edits: {shortlist}  {dim('(preview ranking only — hooks and real edits disagree)')}")
 
-    # ---- 6. edit ------------------------------------------------------------
-    banner("6 · Edit the weights", "weakest α first; keep the first permanent edit that removes every probe refusal")
-    direction = directions[chosen.layer].to(device=device, dtype=dtype)
+    # ---- 6. edit trials -----------------------------------------------------
+    banner("6 · Try real edits", "each candidate is a permanent edit verified on fresh probes and undone; the best stays")
+    snapshot = snapshot_writer_weights(model)
     t0 = time.time()
-    if args.alpha is not None:
-        alpha = args.alpha
-        orthogonalize_model(model, direction, alpha)
-        print(f"applied the edit at user-specified α = {alpha}")
-    else:
-        # Hooks and weight edits agree at α = 1 but not below it, so every trial
-        # is a real edit, verified on the probe set and undone if it fails.
-        snapshot = snapshot_writer_weights(model)
-        alpha = None
-        for a in (0.6, 0.8, 1.0, 1.25):
-            restore_writer_weights(model, snapshot)
-            orthogonalize_model(model, direction, a)
-            outs = generate(model, tokenizer, probe, device, args.max_new_tokens, args.batch_size)
-            ref, on = refusal_rate(outs), on_topic_rate(probe, outs)
-            print(f"  α = {a:<5}: refusal {ref:>4.0%}  on-topic {on:>4.0%}")
-            if ref == 0.0:
-                alpha = a
-                break
-        if alpha is None:
-            print(dim("no strength removed every probe refusal; falling back to full ablation (α = 1.0)"))
-            restore_writer_weights(model, snapshot)
-            alpha = 1.0
-            orthogonalize_model(model, direction, alpha)
+    trials: list[tuple[int, float, float, float]] = []   # (layer, alpha, refusal, on_topic)
+
+    def try_edit(layer: int, a: float) -> float:
+        d = directions[layer].to(device=device, dtype=dtype)
+        restore_writer_weights(model, snapshot)
+        orthogonalize_model(model, d, a)
+        outs = generate(model, tokenizer, probe, device, args.max_new_tokens, args.batch_size)
+        ref, on = refusal_rate(outs), on_topic_rate(probe, outs)
+        print(f"  layer {layer:>2} × α = {a:<4}: refusal {ref:>4.0%}  on-topic {on:>4.0%}")
+        trials.append((layer, a, ref, on))
+        return ref
+
+    for layer in shortlist:
+        # Gate with full strength: if α = 1 can't remove every probe refusal,
+        # no weaker edit can either, so the layer is out after one trial.
+        if try_edit(layer, 1.0 if args.alpha is None else args.alpha) > 0.0:
+            continue
+        if args.alpha is None:
+            for a in (0.8, 0.6):
+                if try_edit(layer, a) > 0.0:
+                    break   # too weak; the previous strength was this layer's best
+    if not any(t[2] == 0.0 for t in trials):
+        # nothing fully removed refusals; give the most promising layer one stronger try
+        fallback = min(trials, key=lambda t: (t[2], -t[3], t[0]))
+        print(dim("no edit removed every probe refusal; trying one stronger edit"))
+        try_edit(fallback[0], 1.25)
+    # fewest refusals, then most real answers, then the weakest edit, then the shallowest layer
+    chosen_layer, alpha, _, _ = min(trials, key=lambda t: (t[2], -t[3], t[1], t[0]))
+    restore_writer_weights(model, snapshot)
+    direction = directions[chosen_layer].to(device=device, dtype=dtype)
+    orthogonalize_model(model, direction, alpha)
     edit_s = time.time() - t0
     n_mats = 1 + 2 * n_layers
     detail = (f"— orthogonalised embed + {n_layers}x(o_proj, down_proj) in {edit_s:.1f}s "
               f"({n_mats} matrices), no training, no hooks")
-    print(f"kept α = {green(bold(str(alpha)))}  {dim(detail)}")
+    print(f"-> kept layer {green(bold(str(chosen_layer)))} at α = {green(bold(str(alpha)))}  {dim(detail)}")
 
     # ---- 7. after ----------------------------------------------------------
     banner("7 · After: does the edited model still refuse?")
@@ -371,7 +382,7 @@ def run(args) -> None:
 
     banner("Done")
     print(f"model          : {args.model}")
-    print(f"edit           : layer {chosen.layer} / {n_layers}, α = {alpha}")
+    print(f"edit           : layer {chosen_layer} / {n_layers}, α = {alpha}")
     print(f"refusal rate   : {red(f'{base_rate:.0%}')} -> {green(bold(f'{abl_rate:.0%}'))}")
     print(f"on-topic answer: {base_answered:.0%} -> {abl_answered:.0%}")
     print(f"total time     : {time.time() - t_start:.1f}s")

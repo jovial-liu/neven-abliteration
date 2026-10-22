@@ -11,13 +11,15 @@ The pipeline in `abliterate.py`:
    activation at the last token for every layer.
 2. Per layer, the refusal direction is the normalised difference of means
    (harmful minus harmless).
-3. Score candidate layers (40–80 % depth) by suppressing each direction with
-   inference-time hooks on *fresh* probe prompts (never the eval set); rank by
-   refusal rate, then real-answer quality.
-4. Pick the ablation strength α by applying real trial edits, weakest first, and
-   keeping the first that removes every probe refusal (hooks and weight edits
-   disagree below α = 1, so trial edits are verified, not simulated).
-5. Permanently orthogonalise every weight that writes to the residual stream
+3. Shortlist candidate layers (40–80 % depth) with a cheap hook-based preview
+   scored on *fresh* probe prompts (never the eval set).
+4. Try real edits: each shortlisted layer is gated with a full-strength (α = 1)
+   permanent edit verified on the probes — hooks and weight edits disagree below
+   α = 1, so nothing is decided by simulation — and passing layers are walked
+   down to the weakest strength that still removes every probe refusal. The
+   winner (fewest refusals, then most real answers, then weakest α, then
+   shallowest layer) is re-applied and left in place.
+5. The edit orthogonalises every weight that writes to the residual stream
    (`embed_tokens`, every `o_proj` and `down_proj`) against that direction:
    `W' = W − α r rᵀ W`. No training, no hooks left behind.
 
@@ -33,7 +35,7 @@ with `fetch_datasets.py`). Only the base model is fetched from the Hub (one-off,
 ```bash
 bash setup.sh                                  # 1. install everything, run tests, download the model (once, ~3 GB)
 . .venv/bin/activate                           # 2. activate (each new terminal)
-python abliterate.py                           # 3. run it, ~4 min on Apple silicon; saves the edited model
+python abliterate.py                           # 3. run it, ~6 min on Apple silicon; saves the edited model
 python chat.py --compare                       # 4. chat with it: original vs edited, /q to quit
 bash reset.sh                                  # 5. wipe and start over (add --full to also delete the download)
 ```
@@ -46,10 +48,10 @@ you can ignore on newer setups: `Redirects are currently not supported in MacOs`
 Needs only `python3` (macOS Command Line Tools: `xcode-select --install`), ~4 GB free disk
 and internet for step 1. Everything else is installed into `.venv` inside this folder.
 
-Faster run (~2 min):
+Faster run (~2 min, single layer tried with real edits):
 
 ```bash
-python abliterate.py --n-train 64 --n-test 16 --max-new-tokens 48 --max-candidates 3
+python abliterate.py --n-train 64 --n-test 16 --max-new-tokens 48 --max-candidates 3 --top-k 1
 ```
 
 ## What's here

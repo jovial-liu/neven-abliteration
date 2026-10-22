@@ -90,6 +90,14 @@ def test_alpha_sweeps_by_default_and_can_be_pinned():
     assert abliterate.parse_args(["--alpha", "0.8"]).alpha == 0.8
 
 
+def test_layer_and_strength_search_defaults():
+    """Full quality default: hook preview over 6 layers, real-edit trials for the top 3."""
+    args = abliterate.parse_args([])
+    assert args.max_candidates == 6 and args.top_k == 3 and args.layer is None
+    assert abliterate.parse_args(["--top-k", "1"]).top_k == 1
+    assert abliterate.parse_args(["--layer", "19"]).layer == 19
+
+
 class _Block(torch.nn.Module):
     def forward(self, x):
         return (x + 1.0,)  # HF decoder layers return a tuple

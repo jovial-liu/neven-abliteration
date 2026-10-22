@@ -45,7 +45,7 @@ cat <<'EOF'
 
 Done. Next:
   . .venv/bin/activate
-  python abliterate.py                                     # abliterate (~4 min on Apple silicon); saves the edited model
+  python abliterate.py                                     # abliterate (~6 min on Apple silicon); saves the edited model
   python chat.py --compare                                 # chat with it: original vs edited (/q to quit)
   bash reset.sh                                            # start over from scratch
 EOF
